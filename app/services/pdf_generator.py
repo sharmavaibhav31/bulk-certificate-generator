@@ -48,6 +48,7 @@ def _setup_fonts() -> str:
     """Attempts to register DejaVuSans for full Unicode/Non-Latin character support."""
     global UNICODE_FONT_NAME
     possible_ttf_paths = [
+        os.path.join(os.path.dirname(__file__), "../fonts/DejaVuSans.ttf"),
         "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
         "/usr/share/fonts/dejavu/DejaVuSans.ttf",
         "/Library/Fonts/DejaVuSans.ttf",
