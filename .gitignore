@@ -1,0 +1,21 @@
+# Storage & uploaded artifacts
+storage/backgrounds/
+storage/certificates/
+storage/*/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+app.db
+
+# Frontend
+node_modules/
+frontend/node_modules/
+frontend/dist/
+
+# Environment & OS
+.env
+.DS_Store
