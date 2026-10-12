@@ -48,10 +48,10 @@ def client(test_db_session_factory, temp_storage, monkeypatch):
     """
     monkeypatch.setenv("WORKER_MODE", "inline")
     monkeypatch.setattr(worker, "SessionLocal", test_db_session_factory)
-    monkeypatch.setattr(worker, "WORKER_MODE", "inline")
     monkeypatch.setattr(templates, "storage", temp_storage)
     monkeypatch.setattr(jobs, "storage", temp_storage)
     monkeypatch.setattr(certificates, "storage", temp_storage)
+    monkeypatch.setattr(worker, "default_storage", temp_storage)
 
     def override_get_db():
         db = test_db_session_factory()

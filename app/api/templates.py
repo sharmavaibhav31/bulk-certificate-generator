@@ -1,13 +1,17 @@
+"""
+Templates API: Endpoints for listing, previewing, and uploading certificate templates.
+"""
+
 from typing import List
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Response
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form, Query, Response
 from sqlalchemy.orm import Session
 
 from app.db import get_db
 from app.schemas import TemplateOut
 from app.services import template_service
-from app.services.pdf_generator import render_preview
+from app.services.certificate_renderer import render_preview
 from app.services.storage import LocalStorage
 
 router = APIRouter(prefix="/templates", tags=["Templates"])
@@ -21,8 +25,15 @@ def list_templates(db: Session = Depends(get_db)):
 
 
 @router.get("/{template_id}/preview")
-def get_template_preview(template_id: UUID, db: Session = Depends(get_db)):
-    """Render and return a sample preview PDF for a template."""
+def get_template_preview(
+    template_id: UUID,
+    name: str = Query("Sample Name", description="Sample recipient name to render on preview"),
+    db: Session = Depends(get_db),
+):
+    """
+    Render and return a live preview PNG for a template.
+    Uses the exact same Pillow rendering pipeline as the background worker.
+    """
     template = template_service.get_template_by_id(db, template_id)
     if not template:
         raise HTTPException(
@@ -30,29 +41,56 @@ def get_template_preview(template_id: UUID, db: Session = Depends(get_db)):
             detail=f"Template with ID '{template_id}' was not found.",
         )
 
-    pdf_bytes = render_preview(template, storage=storage)
+    snapshot = {
+        "kind": template.kind,
+        "key": template.key,
+        "background_path": template.background_path,
+        "layout": template.layout,
+        "required_fields": template.required_fields,
+    }
+
+    try:
+        png_bytes = render_preview(snapshot, sample_name=name, storage=storage)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to render template preview: {str(exc)}",
+        )
+
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
-        headers={"Content-Disposition": f'inline; filename="preview_{template_id}.pdf"'},
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Content-Disposition": f'inline; filename="preview_{template_id}.png"'},
     )
 
 
 @router.post("/custom", response_model=TemplateOut, status_code=status.HTTP_201_CREATED)
 async def upload_custom_template(
     name: str = Form(..., description="Template display name"),
-    image: UploadFile = File(..., description="Certificate background image (PNG/JPEG)"),
-    name_y: float = Form(..., ge=0.0, le=100.0, description="Recipient name Y percentage (0-100)"),
-    course_y: float = Form(..., ge=0.0, le=100.0, description="Course title Y percentage (0-100)"),
-    date_y: float = Form(..., ge=0.0, le=100.0, description="Issue date Y percentage (0-100)"),
+    image: UploadFile = File(..., description="Certificate background image (PNG or JPEG, up to 10MB)"),
+    name_x: float = Form(50.0, ge=0.0, le=100.0, description="Recipient name X percentage (0-100, default 50)"),
+    name_y: float = Form(57.0, ge=0.0, le=100.0, description="Recipient name Y percentage (0-100, default 57)"),
+    font: str = Form("dejavu_sans", description="Font key from bundled fonts (dejavu_sans, dejavu_serif, liberation_sans, liberation_serif)"),
+    font_size_pct: float = Form(5.0, gt=0.0, le=50.0, description="Font size as percent of image height"),
+    color: str = Form("#1A202C", description="Hex color code for recipient name"),
+    max_width_pct: float = Form(70.0, gt=0.0, le=100.0, description="Max width percentage before text auto-shrinks"),
     db: Session = Depends(get_db),
 ):
     """
-    Upload a custom certificate background image with layout percentage coordinates.
-    Rejects with 413 if > 5MB, 415 if unsupported format, or 400 if bad aspect ratio/coordinates.
+    Upload a custom certificate background image and configure name overlay coordinates.
+    - Validates size under 10 MB, pixels under 25M, format PNG or JPEG.
+    - Saves image as lossless PNG at backgrounds/{template_id}.png at ORIGINAL resolution.
+    - Does not enforce aspect ratio or resize the image.
     """
     file_bytes = await image.read()
-    layout_data = {"name_y": name_y, "course_y": course_y, "date_y": date_y}
+    layout_data = {
+        "name_x": name_x,
+        "name_y": name_y,
+        "font": font,
+        "font_size_pct": font_size_pct,
+        "color": color,
+        "max_width_pct": max_width_pct,
+    }
 
     try:
         template = template_service.create_custom_template(

@@ -6,6 +6,7 @@ export default function SubmitBar({
   organizationName,
   issuedDate,
   selectedTemplateId,
+  outputFormat = 'pdf',
   recipients,
   onJobStarted,
 }) {
@@ -13,10 +14,8 @@ export default function SubmitBar({
   const [errorMsg, setErrorMsg] = useState('');
 
   const isFormValid =
-    title.trim().length > 0 &&
     Boolean(selectedTemplateId) &&
-    recipients.length > 0 &&
-    Boolean(issuedDate);
+    recipients.length > 0;
 
   const handleSubmit = async () => {
     if (!isFormValid || submitting) return;
@@ -26,13 +25,14 @@ export default function SubmitBar({
 
     try {
       const payload = {
-        title: title.trim(),
-        organization_name: organizationName.trim() || null,
-        issued_date: issuedDate,
+        title: title ? title.trim() : null,
+        organization_name: organizationName ? organizationName.trim() : null,
+        issued_date: issuedDate || null,
+        output_format: outputFormat || 'pdf',
         template_id: selectedTemplateId,
         recipients: recipients.map((r) => ({
           name: r.name,
-          email: r.email,
+          email: r.email || null,
         })),
       };
 
@@ -59,9 +59,8 @@ export default function SubmitBar({
             Ready to Generate
           </div>
           <div style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
-            {recipients.length} recipient{recipients.length === 1 ? '' : 's'} queued
+            {recipients.length} recipient{recipients.length === 1 ? '' : 's'} queued • Format: {outputFormat.toUpperCase()}
             {!selectedTemplateId && ' • Select a template'}
-            {!title && ' • Enter a course title'}
           </div>
         </div>
 
@@ -74,7 +73,7 @@ export default function SubmitBar({
           {submitting ? (
             <>⏳ Dispatching Job...</>
           ) : (
-            <>🚀 Generate {recipients.length} Certificate{recipients.length === 1 ? '' : 's'}</>
+            <>🚀 Generate {recipients.length} Certificate{recipients.length === 1 ? '' : 's'} ({outputFormat.toUpperCase()})</>
           )}
         </button>
       </div>

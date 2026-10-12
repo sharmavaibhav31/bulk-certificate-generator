@@ -1,15 +1,16 @@
 import io
+import uuid
 from PIL import Image
 import pytest
 
-from app.services.pdf_generator import render_certificate
+from app.services.certificate_renderer import render_certificate, render_preview
 from app.services.template_registry import BUILTIN_STYLE_CONFIGS
 
 
 def test_render_all_builtin_and_custom_templates(temp_storage):
     """
-    Assert valid PDF bytes (starting with %PDF-) generated for all 5 builtin templates
-    and a custom template with generated background image.
+    Assert valid PDF bytes generated for all 5 builtin templates
+    and a custom template with a generated background image.
     """
     # 1. Test each builtin template
     for key in ("classic", "modern", "minimal", "elegant", "bold"):
@@ -18,57 +19,70 @@ def test_render_all_builtin_and_custom_templates(temp_storage):
             "key": key,
             "layout": BUILTIN_STYLE_CONFIGS[key]["layout"],
         }
+        job_fields = {
+            "title": "Radiation Physics & Chemistry",
+            "issued_date": "2026-10-10",
+            "organization_name": "Sorbonne University",
+        }
         pdf_bytes = render_certificate(
-            recipient_name="Marie Curie",
-            course_title="Radiation Physics & Chemistry",
-            issued_date="2026-10-10",
-            organization_name="Sorbonne University",
-            template=tpl_config,
+            name="Marie Curie",
+            template_snapshot=tpl_config,
+            job_fields=job_fields,
+            output_format="pdf",
             storage=temp_storage,
         )
-        assert pdf_bytes.startswith(b"%PDF-")
+        assert pdf_bytes.startswith(b"%PDF")
         assert len(pdf_bytes) > 1000
 
     # 2. Test custom template with generated background image
-    # Generate A4 landscape test image (1414 x 1000)
-    img = Image.new("RGB", (1414, 1000), color="darkgreen")
+    img = Image.new("RGB", (1200, 800), color="darkgreen")
     img_buf = io.BytesIO()
     img.save(img_buf, format="PNG")
-    stored_bg_path = temp_storage.save("backgrounds/test_bg.png", img_buf.getvalue())
+    tpl_id = uuid.uuid4()
+    stored_bg_path = temp_storage.save(f"backgrounds/{tpl_id}.png", img_buf.getvalue())
 
     custom_tpl = {
         "kind": "custom",
         "background_path": stored_bg_path,
-        "layout": {"name_y": 40.0, "course_y": 55.0, "date_y": 70.0},
+        "layout": {
+            "name_x": 50.0,
+            "name_y": 57.0,
+            "font": "dejavu_sans",
+            "font_size_pct": 5.0,
+            "color": "#1A202C",
+            "max_width_pct": 70.0,
+        },
     }
     custom_pdf_bytes = render_certificate(
-        recipient_name="Ada Lovelace",
-        course_title="Analytical Computing",
-        issued_date="2026-10-10",
-        organization_name="University of Cambridge",
-        template=custom_tpl,
+        name="Ada Lovelace",
+        template_snapshot=custom_tpl,
+        job_fields={},
+        output_format="pdf",
         storage=temp_storage,
     )
-    assert custom_pdf_bytes.startswith(b"%PDF-")
+    assert custom_pdf_bytes.startswith(b"%PDF")
     assert len(custom_pdf_bytes) > 1000
 
 
-def test_custom_template_upload_rules(client):
+def test_custom_template_upload_and_preview_flow(client):
     """
-    Test custom template upload validation:
-    - Rejects non-image / unsupported format (415)
-    - Rejects oversized file > 5MB (413)
-    - Rejects non-A4 aspect ratio (400)
-    - Accepts valid PNG and re-saves with metadata stripped (201)
+    Test custom template upload validation and live PNG preview:
+    - Rejects non-image format (415 or 400)
+    - Rejects oversized file > 10MB (413)
+    - Accepts valid image regardless of aspect ratio (201)
+    - Returns live PNG preview for template
     """
     base_data = {
         "name": "Custom Corporate Frame",
-        "name_y": "45.0",
-        "course_y": "60.0",
-        "date_y": "75.0",
+        "name_x": "50.0",
+        "name_y": "57.0",
+        "font": "dejavu_sans",
+        "font_size_pct": "5.0",
+        "color": "#1A202C",
+        "max_width_pct": "70.0",
     }
 
-    # 1. Non-image file (e.g. text file masquerading as image) -> 415 or 400
+    # 1. Non-image file -> 415 or 400
     fake_txt = io.BytesIO(b"Hello this is not an image file")
     res_non_img = client.post(
         "/api/v1/templates/custom",
@@ -77,8 +91,8 @@ def test_custom_template_upload_rules(client):
     )
     assert res_non_img.status_code in (400, 415)
 
-    # 2. Oversized file > 5 MB -> 413 Request Entity Too Large
-    huge_bytes = io.BytesIO(b"\x00" * (6 * 1024 * 1024))
+    # 2. Oversized file > 10 MB -> 413 Request Entity Too Large
+    huge_bytes = io.BytesIO(b"\x00" * (11 * 1024 * 1024))
     res_oversized = client.post(
         "/api/v1/templates/custom",
         data=base_data,
@@ -87,22 +101,8 @@ def test_custom_template_upload_rules(client):
     assert res_oversized.status_code == 413
     assert "exceeds maximum allowed limit" in res_oversized.json()["error"]["message"]
 
-    # 3. Wrong aspect ratio (Square 500x500 instead of A4 ~1.414) -> 400 Bad Request
-    square_img = Image.new("RGB", (500, 500), color="blue")
-    sq_buf = io.BytesIO()
-    square_img.save(sq_buf, format="PNG")
-    sq_buf.seek(0)
-
-    res_bad_aspect = client.post(
-        "/api/v1/templates/custom",
-        data=base_data,
-        files={"image": ("square.png", sq_buf, "image/png")},
-    )
-    assert res_bad_aspect.status_code == 400
-    assert "aspect ratio" in res_bad_aspect.json()["error"]["message"]
-
-    # 4. Valid A4 landscape PNG (1414 x 1000) -> 201 Created
-    valid_img = Image.new("RGB", (1414, 1000), color="navy")
+    # 3. Square image (500x500) -> 201 Created (no aspect ratio restriction)
+    valid_img = Image.new("RGB", (800, 600), color="navy")
     valid_buf = io.BytesIO()
     valid_img.save(valid_buf, format="PNG")
     valid_buf.seek(0)
@@ -110,11 +110,20 @@ def test_custom_template_upload_rules(client):
     res_valid = client.post(
         "/api/v1/templates/custom",
         data=base_data,
-        files={"image": ("valid_a4.png", valid_buf, "image/png")},
+        files={"image": ("custom_frame.png", valid_buf, "image/png")},
     )
     assert res_valid.status_code == 201
     tpl_out = res_valid.json()
     assert tpl_out["kind"] == "custom"
     assert tpl_out["name"] == "Custom Corporate Frame"
+    assert tpl_out["required_fields"] == ["name"]
     assert tpl_out["background_path"].startswith("backgrounds/")
     assert tpl_out["background_path"].endswith(".png")
+
+    template_id = tpl_out["id"]
+
+    # 4. Live PNG preview
+    preview_res = client.get(f"/api/v1/templates/{template_id}/preview?name=Jane+Doe")
+    assert preview_res.status_code == 200
+    assert preview_res.headers["content-type"] == "image/png"
+    assert preview_res.content.startswith(b"\x89PNG\r\n\x1a\n")

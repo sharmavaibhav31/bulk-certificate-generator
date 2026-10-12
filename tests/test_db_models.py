@@ -9,7 +9,6 @@ from app.models import Template, Job, Certificate, CertificateStatus
 from app.schemas import (
     RecipientIn,
     JobCreate,
-    TemplateLayout,
     JobProgress,
     DerivedJobStatus,
 )
@@ -35,6 +34,8 @@ def test_seed_builtin_templates(db_session):
     assert len(templates) == 5
     keys = {t.key for t in templates}
     assert keys == {"classic", "modern", "minimal", "elegant", "bold"}
+    for t in templates:
+        assert t.required_fields == ["name", "title", "issued_date"]
 
 
 def test_create_job_and_certificate(db_session):
@@ -56,12 +57,14 @@ def test_create_job_and_certificate(db_session):
         job_id=job.id,
         recipient_name="Alice Smith",
         recipient_email="alice@example.com",
+        file_name="Alice_Smith.pdf",
         status=CertificateStatus.SUCCEEDED,
     )
     cert2 = Certificate(
         job_id=job.id,
         recipient_name="Bob Jones",
         recipient_email="invalid-email-format",
+        file_name="Bob_Jones.pdf",
         status=CertificateStatus.FAILED,
         error_message="Invalid email address format",
     )
@@ -72,25 +75,22 @@ def test_create_job_and_certificate(db_session):
     assert len(job.certificates) == 2
     assert cert1.status == CertificateStatus.SUCCEEDED
     assert cert2.status == CertificateStatus.FAILED
+    assert cert1.file_name == "Alice_Smith.pdf"
 
 
 def test_schemas_lenient_recipient_validation():
-    # Structural valid request with non-standard email should pass Level 1 validation
-    rec = RecipientIn(name="John Doe", email="not-an-email")
-    assert rec.email == "not-an-email"
+    # Email is optional in RecipientIn
+    rec1 = RecipientIn(name="John Doe", email="john@example.com")
+    assert rec1.email == "john@example.com"
+
+    rec2 = RecipientIn(name="Jane Doe")  # email omitted
+    assert rec2.email is None
 
     job_data = JobCreate(
         title="Web Dev Bootcamp",
         issued_date=date(2026, 10, 7),
         template_id=uuid.uuid4(),
-        recipients=[rec],
+        recipients=[rec1, rec2],
     )
-    assert len(job_data.recipients) == 1
-
-
-def test_template_layout_bounds():
-    valid_layout = TemplateLayout(name_y=45.0, course_y=60.0, date_y=75.0)
-    assert valid_layout.name_y == 45.0
-
-    with pytest.raises(Exception):
-        TemplateLayout(name_y=150.0, course_y=60.0, date_y=75.0)  # > 100
+    assert len(job_data.recipients) == 2
+    assert job_data.output_format == "pdf"

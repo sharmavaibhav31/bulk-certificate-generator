@@ -7,12 +7,14 @@ export default function DetailsForm({
   setOrganizationName,
   issuedDate,
   setIssuedDate,
+  outputFormat,
+  setOutputFormat,
 }) {
   return (
     <div className="card">
-      <h2 className="card-title">📝 3. Certificate Details</h2>
+      <h2 className="card-title">📝 3. Certificate Details &amp; Output Format</h2>
       <p className="card-subtitle">
-        Enter the course or event details that will be rendered across all recipient certificates.
+        Enter the event details and select the certificate export format.
       </p>
 
       <div className="grid-2">
@@ -42,17 +44,32 @@ export default function DetailsForm({
         </div>
       </div>
 
-      <div className="form-group" style={{ maxWidth: '300px' }}>
-        <label className="form-label">
-          Issue Date <span style={{ color: 'var(--danger)' }}>*</span>
-        </label>
-        <input
-          type="date"
-          className="form-input"
-          value={issuedDate}
-          onChange={(e) => setIssuedDate(e.target.value)}
-          required
-        />
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', maxWidth: '600px' }}>
+        <div className="form-group">
+          <label className="form-label">
+            Issue Date <span style={{ color: 'var(--danger)' }}>*</span>
+          </label>
+          <input
+            type="date"
+            className="form-input"
+            value={issuedDate}
+            onChange={(e) => setIssuedDate(e.target.value)}
+            required
+          />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Output Format</label>
+          <select
+            className="form-input"
+            value={outputFormat}
+            onChange={(e) => setOutputFormat(e.target.value)}
+          >
+            <option value="pdf">PDF Document (.pdf)</option>
+            <option value="png">Lossless Image (.png)</option>
+            <option value="jpg">High Quality Image (.jpg)</option>
+          </select>
+        </div>
       </div>
     </div>
   );

@@ -56,10 +56,12 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
                 onClick={() => setSelectedTemplateId(tpl.id)}
               >
                 <div className="template-preview-box">
-                  <iframe
-                    src={`${getTemplatePreviewUrl(tpl.id)}#toolbar=0&navpanes=0&scrollbar=0&view=Fit`}
-                    title={`Preview ${tpl.name}`}
+                  <img
+                    src={`${getTemplatePreviewUrl(tpl.id)}?name=Sample+Recipient`}
+                    alt={`Preview ${tpl.name}`}
                     className="template-preview-frame"
+                    style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    loading="lazy"
                   />
                 </div>
                 <div className="template-info">

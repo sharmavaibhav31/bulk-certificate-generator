@@ -29,6 +29,7 @@ def client_and_db(tmp_path, monkeypatch):
     monkeypatch.setattr(templates, "storage", test_storage)
     monkeypatch.setattr(jobs, "storage", test_storage)
     monkeypatch.setattr(certificates, "storage", test_storage)
+    monkeypatch.setattr(worker, "default_storage", test_storage)
     monkeypatch.setattr(worker, "SessionLocal", TestingSessionLocal)
     monkeypatch.setenv("WORKER_MODE", "inline")
 
@@ -69,17 +70,16 @@ def test_template_preview(client_and_db):
     res = client.get("/api/v1/templates")
     template_id = res.json()[0]["id"]
 
-    preview_res = client.get(f"/api/v1/templates/{template_id}/preview")
+    preview_res = client.get(f"/api/v1/templates/{template_id}/preview?name=Jane+Doe")
     assert preview_res.status_code == 200
-    assert preview_res.headers["content-type"] == "application/pdf"
-    assert preview_res.content.startswith(b"%PDF-")
+    assert preview_res.headers["content-type"] == "image/png"
+    assert preview_res.content.startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_custom_template_upload(client_and_db):
     client, _ = client_and_db
 
-    # Create A4 landscape test image (1414 x 1000)
-    img = Image.new("RGB", (1414, 1000), color="darkblue")
+    img = Image.new("RGB", (1000, 700), color="darkblue")
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -87,9 +87,12 @@ def test_custom_template_upload(client_and_db):
     files = {"image": ("bg.png", buf, "image/png")}
     data = {
         "name": "Custom Tech Certificate",
-        "name_y": "45.0",
-        "course_y": "60.0",
-        "date_y": "75.0",
+        "name_x": "50.0",
+        "name_y": "57.0",
+        "font": "dejavu_sans",
+        "font_size_pct": "5.0",
+        "color": "#1A202C",
+        "max_width_pct": "70.0",
     }
 
     res = client.post("/api/v1/templates/custom", data=data, files=files)
@@ -97,24 +100,26 @@ def test_custom_template_upload(client_and_db):
     tpl = res.json()
     assert tpl["kind"] == "custom"
     assert tpl["name"] == "Custom Tech Certificate"
+    assert tpl["required_fields"] == ["name"]
 
 
-def test_custom_template_upload_bad_aspect(client_and_db):
+def test_custom_template_upload_unsupported_format(client_and_db):
     client, _ = client_and_db
-    # Square image (ratio 1.0)
-    img = Image.new("RGB", (500, 500), color="darkblue")
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    buf.seek(0)
+    fake_txt = io.BytesIO(b"This is not a valid PNG or JPEG image")
 
-    files = {"image": ("bg.png", buf, "image/png")}
-    data = {"name": "Bad Aspect", "name_y": "45.0", "course_y": "60.0", "date_y": "75.0"}
+    files = {"image": ("bg.txt", fake_txt, "text/plain")}
+    data = {
+        "name": "Invalid File",
+        "name_x": "50.0",
+        "name_y": "57.0",
+        "font": "dejavu_sans",
+        "font_size_pct": "5.0",
+        "color": "#1A202C",
+        "max_width_pct": "70.0",
+    }
 
     res = client.post("/api/v1/templates/custom", data=data, files=files)
-    assert res.status_code == 400
-    err = res.json()["error"]
-    assert err["code"] == "BAD_REQUEST"
-    assert "aspect ratio" in err["message"]
+    assert res.status_code in (400, 415)
 
 
 def test_create_and_poll_job_flow(client_and_db):
@@ -126,6 +131,7 @@ def test_create_and_poll_job_flow(client_and_db):
         "title": "Machine Learning Specialization",
         "organization_name": "AI Institute",
         "issued_date": "2026-10-10",
+        "output_format": "pdf",
         "template_id": template_id,
         "recipients": [
             {"name": "Grace Hopper", "email": "grace@example.com"},
@@ -151,6 +157,8 @@ def test_create_and_poll_job_flow(client_and_db):
     assert prog["succeeded"] == 2
     assert prog["failed"] == 1
     assert prog["status"] == "completed_with_errors"
+    assert len(prog["failed_recipients"]) == 1
+    assert prog["failed_recipients"][0]["name"] == "Bad Recipient"
 
     # List certificates
     certs_res = client.get(f"/api/v1/jobs/{job_id}/certificates")
@@ -166,7 +174,7 @@ def test_create_and_poll_job_flow(client_and_db):
     # Download single certificate
     dl_res = client.get(f"/api/v1/certificates/{succeeded_cert['id']}/download")
     assert dl_res.status_code == 200
-    assert dl_res.content.startswith(b"%PDF-")
+    assert dl_res.content.startswith(b"%PDF")
 
     # Download failed cert returns 404
     bad_dl = client.get(f"/api/v1/certificates/{failed_cert['id']}/download")

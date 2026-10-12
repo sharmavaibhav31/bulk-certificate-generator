@@ -1,7 +1,7 @@
 from datetime import datetime, date, timezone
 import enum
 import uuid
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 from sqlalchemy import (
     String,
@@ -41,9 +41,14 @@ class Template(Base):
     background_path: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
     )
+    # Layout configuration (e.g. name_x, name_y, font, font_size_pct, color, max_width_pct)
     layout: Mapped[Dict[str, Any]] = mapped_column(
         JSON, nullable=False
-    )  # e.g. {"name_y": 45.0, "course_y": 60.0, "date_y": 75.0}
+    )
+    # List of field names required by this template: ["name", "title", "issued_date"] or ["name"]
+    required_fields: Mapped[List[str]] = mapped_column(
+        JSON, nullable=False, default=lambda: ["name"]
+    )
     is_deleted: Mapped[bool] = mapped_column(
         Boolean, default=False, nullable=False
     )
@@ -64,17 +69,22 @@ class Job(Base):
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, default=uuid.uuid4
     )
-    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     organization_name: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True
     )
-    issued_date: Mapped[date] = mapped_column(Date, nullable=False)
+    issued_date: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
     template_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("templates.id"), nullable=False
     )
+    # Output file format: "pdf", "png", "jpg"
+    output_format: Mapped[str] = mapped_column(
+        String(10), default="pdf", nullable=False
+    )
+    # Frozen snapshot of template layout, background path, and required fields at job creation
     layout_snapshot: Mapped[Dict[str, Any]] = mapped_column(
         JSON, nullable=False
-    )  # Frozen copy of template layout at job creation time
+    )
     idempotency_key: Mapped[Optional[str]] = mapped_column(
         String(255), nullable=True, unique=True, index=True
     )
@@ -105,7 +115,9 @@ class Certificate(Base):
         ForeignKey("jobs.id"), index=True, nullable=False
     )
     recipient_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    recipient_email: Mapped[str] = mapped_column(String(255), nullable=False)
+    recipient_email: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    # Sanitized friendly file name for ZIP entry and download header (e.g. "Jane_Doe.pdf")
+    file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     status: Mapped[CertificateStatus] = mapped_column(
         Enum(CertificateStatus, name="cert_status_enum", values_callable=lambda obj: [e.value for e in obj]),
         default=CertificateStatus.PENDING,
@@ -115,6 +127,7 @@ class Certificate(Base):
     error_message: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True
     )
+    # Storage relative path on disk: "storage/{job_id}/{certificate_id}.{ext}"
     file_path: Mapped[Optional[str]] = mapped_column(
         String(512), nullable=True
     )

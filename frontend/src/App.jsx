@@ -19,6 +19,7 @@ export default function App() {
   const [title, setTitle] = useState('');
   const [organizationName, setOrganizationName] = useState('');
   const [issuedDate, setIssuedDate] = useState(getTodayDateString());
+  const [outputFormat, setOutputFormat] = useState('pdf');
   const [activeJobId, setActiveJobId] = useState(null);
 
   const handleReset = () => {
@@ -32,7 +33,7 @@ export default function App() {
       <header className="header-section">
         <h1>🎓 Bulk Certificate Generator</h1>
         <p>
-          High-performance, fault-tolerant bulk PDF certificate rendering with live progress tracking.
+          High-performance, fault-tolerant bulk certificate rendering with multi-format export and live progress tracking.
         </p>
       </header>
 
@@ -54,6 +55,8 @@ export default function App() {
             setOrganizationName={setOrganizationName}
             issuedDate={issuedDate}
             setIssuedDate={setIssuedDate}
+            outputFormat={outputFormat}
+            setOutputFormat={setOutputFormat}
           />
 
           <SubmitBar
@@ -61,6 +64,7 @@ export default function App() {
             organizationName={organizationName}
             issuedDate={issuedDate}
             selectedTemplateId={selectedTemplateId}
+            outputFormat={outputFormat}
             recipients={recipients}
             onJobStarted={(jobId) => setActiveJobId(jobId)}
           />

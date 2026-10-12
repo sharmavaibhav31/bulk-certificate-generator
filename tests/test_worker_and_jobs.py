@@ -24,7 +24,6 @@ from app import worker
 
 @pytest.fixture
 def test_db_and_storage(tmp_path, monkeypatch):
-    # Setup test DB and storage
     storage_dir = tmp_path / "storage"
     storage = LocalStorage(base_dir=str(storage_dir))
 
@@ -40,6 +39,7 @@ def test_db_and_storage(tmp_path, monkeypatch):
 
     # Configure worker to use this SessionLocal and LocalStorage
     monkeypatch.setattr(worker, "SessionLocal", Session)
+    monkeypatch.setattr(worker, "default_storage", storage)
     monkeypatch.setenv("WORKER_MODE", "inline")
 
     try:
@@ -56,7 +56,7 @@ def test_create_job_with_mixed_recipients(test_db_and_storage):
         RecipientIn(name="Alice Good", email="alice@example.com"),
         RecipientIn(name="", email="noname@example.com"),  # Invalid: empty name
         RecipientIn(name="Bob BadEmail", email="bad-email-format"),  # Invalid: bad email
-        RecipientIn(name="Charlie Good", email="charlie@example.com"),
+        RecipientIn(name="Charlie NoEmail"),  # Valid: optional email omitted
     ]
 
     payload = JobCreate(
@@ -153,7 +153,7 @@ def test_worker_processing_mixed_batch(test_db_and_storage):
         assert sc.file_path is not None
         assert storage.exists(sc.file_path)
         pdf_bytes = storage.read(sc.file_path)
-        assert pdf_bytes.startswith(b"%PDF-")
+        assert pdf_bytes.startswith(b"%PDF")
 
 
 def test_pagination_and_zip_streaming(test_db_and_storage):

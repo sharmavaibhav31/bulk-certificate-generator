@@ -1,3 +1,8 @@
+"""
+Jobs API: Endpoints for submitting, monitoring, listing, and exporting certificate jobs.
+"""
+
+import re
 from typing import Optional, List
 from uuid import UUID
 
@@ -57,7 +62,7 @@ def create_bulk_job(
     try:
         job, is_new = job_service.create_job(db, payload)
     except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(e))
 
     # Dispatch to background worker
     if is_new or job.finished_at is None:
@@ -75,6 +80,7 @@ def get_job_progress(job_id: UUID, db: Session = Depends(get_db)):
     """
     Fetch live progress of a generation job.
     Counts and progress percentage are dynamically calculated from certificate rows.
+    Returns failed recipients list with name, email, and error_message.
     """
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -121,7 +127,8 @@ def get_job_certificates(
 @router.get("/{job_id}/download")
 def download_all_certificates_zip(job_id: UUID, db: Session = Depends(get_db)):
     """
-    Stream a compressed ZIP file containing all successfully generated certificates in this job.
+    Stream a ZIP file containing all successfully generated certificates in this job.
+    Uses ZIP_STORED, entries named by cert.file_name, download named after job title.
     """
     job = db.query(Job).filter(Job.id == job_id).first()
     if not job:
@@ -130,8 +137,11 @@ def download_all_certificates_zip(job_id: UUID, db: Session = Depends(get_db)):
             detail=f"Job with ID '{job_id}' not found.",
         )
 
+    safe_title = re.sub(r"[^\w\s\-]", "", job.title or "").strip().replace(" ", "_")
+    zip_filename = f"{safe_title}.zip" if safe_title else f"certificates_{job_id}.zip"
+
     return StreamingResponse(
         job_service.stream_job_zip(db, job_id, storage=storage),
         media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="certificates_{job_id}.zip"'},
+        headers={"Content-Disposition": f'attachment; filename="{zip_filename}"'},
     )

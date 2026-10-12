@@ -14,15 +14,21 @@ CONCURRENCY & WORKER ARCHITECTURE:
 
 2. Failure Isolation:
    Each certificate is rendered inside its own try/except block. A rendering error
-   or invalid font on one recipient records status = 'failed' with error_message,
+   or missing background on one recipient records status = 'failed' with error_message,
    committing immediately without interrupting remaining recipients in the batch.
 
-3. Celery / Distributed Task Queue Ready:
+3. Base Template Preloading:
+   Loads the background image or base canvas once per job. Individual certificates
+   use fast in-memory copies (`image.copy()`), avoiding repeated disk I/O and decodes.
+   If a custom template background is missing or unreadable, the job fails immediately
+   with a clear error rather than falling back to an incorrect blank design.
+
+4. Celery / Distributed Task Queue Ready:
    The core function `process_job(job_id)` is completely self-contained with its
    own DB session and storage lifecycle. In a larger production setup, Celery
    could invoke `process_job.delay(str(job_id))` with zero changes to business logic.
 
-4. Configurable Execution Mode:
+5. Configurable Execution Mode:
    - WORKER_MODE='thread': Asynchronous processing via ThreadPoolExecutor.
    - WORKER_MODE='inline': Synchronous execution in current thread (ideal for pytest).
 ================================================================================
@@ -30,17 +36,24 @@ CONCURRENCY & WORKER ARCHITECTURE:
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import io
 import logging
 import os
 from typing import Union
 from uuid import UUID
 
+from PIL import Image
 from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from app.db import SessionLocal
 from app.models import Job, Certificate, CertificateStatus
-from app.services.pdf_generator import render_certificate
+from app.services.certificate_renderer import (
+    render_certificate,
+    BUILTIN_CANVAS_WIDTH,
+    BUILTIN_CANVAS_HEIGHT,
+)
+from app.services.template_registry import get_template_config
 from app.services.storage import StorageInterface, LocalStorage
 
 logger = logging.getLogger("app.worker")
@@ -57,6 +70,9 @@ _executor = ThreadPoolExecutor(
 )
 
 
+default_storage = LocalStorage()
+
+
 def process_job(
     job_id: Union[str, UUID],
     storage: StorageInterface = None,
@@ -70,7 +86,7 @@ def process_job(
     immediate live progress updates.
     """
     if storage is None:
-        storage = LocalStorage()
+        storage = default_storage
 
     target_job_uuid = UUID(str(job_id))
 
@@ -79,6 +95,62 @@ def process_job(
         if not job:
             logger.error("Job %s not found for processing.", target_job_uuid)
             return
+
+        # Preload base template image once per job for high-performance batch rendering
+        preloaded_base_image = None
+        preload_error = None
+        kind = job.layout_snapshot.get("kind", "builtin")
+
+        if kind == "custom":
+            bg_path = job.layout_snapshot.get("background_path")
+            if not bg_path:
+                preload_error = "Custom template is missing background_path."
+            elif not storage.exists(bg_path):
+                preload_error = f"Custom template background image '{bg_path}' not found."
+            else:
+                try:
+                    bg_bytes = storage.read(bg_path)
+                    loaded_img = Image.open(io.BytesIO(bg_bytes))
+                    if loaded_img.mode not in ("RGB", "RGBA"):
+                        loaded_img = loaded_img.convert("RGBA" if "A" in loaded_img.mode else "RGB")
+                    preloaded_base_image = loaded_img
+                except Exception as exc:
+                    preload_error = f"Failed to open custom background image '{bg_path}': {str(exc)}"
+        else:
+            try:
+                key = job.layout_snapshot.get("key", "classic")
+                config = get_template_config(key)
+                bg_color = config.get("colors", {}).get("background", "#FFFDF7")
+                preloaded_base_image = Image.new("RGB", (BUILTIN_CANVAS_WIDTH, BUILTIN_CANVAS_HEIGHT), color=bg_color)
+            except Exception as exc:
+                preload_error = f"Failed to initialize builtin canvas: {str(exc)}"
+
+        # If base image failed to load, fail all pending certificates immediately
+        if preload_error:
+            logger.error("Job %s base template error: %s", target_job_uuid, preload_error)
+            stmt = (
+                update(Certificate)
+                .where(
+                    Certificate.job_id == target_job_uuid,
+                    Certificate.status.in_([CertificateStatus.PENDING, CertificateStatus.PROCESSING]),
+                )
+                .values(
+                    status=CertificateStatus.FAILED,
+                    error_message=preload_error,
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+            db.execute(stmt)
+            job.finished_at = datetime.now(timezone.utc)
+            db.commit()
+            return
+
+        out_format = (job.output_format or "pdf").lower()
+        job_fields = {
+            "title": job.title,
+            "organization_name": job.organization_name,
+            "issued_date": str(job.issued_date) if job.issued_date else None,
+        }
 
         # Continuous batch processing until no pending certificates remain
         while True:
@@ -121,19 +193,19 @@ def process_job(
                 if not cert:
                     continue
 
-                # 3. Render PDF inside isolated try/except block
+                # 3. Render certificate inside isolated try/except block
                 try:
-                    pdf_bytes = render_certificate(
-                        recipient_name=cert.recipient_name,
-                        course_title=job.title,
-                        issued_date=job.issued_date,
-                        organization_name=job.organization_name,
-                        template=job.layout_snapshot,
+                    cert_bytes = render_certificate(
+                        name=cert.recipient_name,
+                        template_snapshot=job.layout_snapshot,
+                        job_fields=job_fields,
+                        output_format=out_format,
                         storage=storage,
+                        preloaded_base_image=preloaded_base_image,
                     )
 
-                    file_path = f"certificates/{job.id}/{cert.id}.pdf"
-                    storage.save(file_path, pdf_bytes)
+                    file_path = f"{job.id}/{cert.id}.{out_format}"
+                    storage.save(file_path, cert_bytes)
 
                     cert.status = CertificateStatus.SUCCEEDED
                     cert.file_path = file_path

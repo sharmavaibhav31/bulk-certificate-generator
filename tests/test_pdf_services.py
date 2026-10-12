@@ -1,11 +1,12 @@
 import io
+import uuid
 from PIL import Image
 import pytest
 
 from app.services.storage import LocalStorage
-from app.services.template_registry import BUILTIN_STYLE_CONFIGS, get_template_config
+from app.services.template_registry import BUILTIN_STYLE_CONFIGS
 from app.services.template_upload import validate_and_store_background
-from app.services.pdf_generator import render_certificate, render_preview
+from app.services.certificate_renderer import render_certificate, render_preview
 
 
 @pytest.fixture
@@ -19,66 +20,97 @@ def test_storage_save_and_read(temp_storage):
     assert temp_storage.read("test/hello.txt") == b"Hello World"
 
 
-def test_render_builtin_templates():
+def test_render_builtin_templates(temp_storage):
+    """Verify built-in template rendering for PDF, PNG, and JPG formats."""
     for key in ("classic", "modern", "minimal", "elegant", "bold"):
         tpl_config = {
             "kind": "builtin",
             "key": key,
             "layout": BUILTIN_STYLE_CONFIGS[key]["layout"],
         }
+        job_fields = {
+            "title": "Quantum Computing 101",
+            "issued_date": "2026-10-09",
+            "organization_name": "Tech University",
+        }
+
+        # PDF format
         pdf_bytes = render_certificate(
-            recipient_name="Alice Wonderland",
-            course_title="Quantum Computing 101",
-            issued_date="2026-10-09",
-            organization_name="Tech University",
-            template=tpl_config,
+            name="Alice Wonderland",
+            template_snapshot=tpl_config,
+            job_fields=job_fields,
+            output_format="pdf",
+            storage=temp_storage,
         )
-        assert pdf_bytes.startswith(b"%PDF-")
+        assert pdf_bytes.startswith(b"%PDF")
         assert len(pdf_bytes) > 1000
 
+        # PNG format
+        png_bytes = render_certificate(
+            name="Alice Wonderland",
+            template_snapshot=tpl_config,
+            job_fields=job_fields,
+            output_format="png",
+            storage=temp_storage,
+        )
+        assert png_bytes.startswith(b"\x89PNG\r\n\x1a\n")
 
-def test_render_long_recipient_name_auto_shrink():
+        # JPG format
+        jpg_bytes = render_certificate(
+            name="Alice Wonderland",
+            template_snapshot=tpl_config,
+            job_fields=job_fields,
+            output_format="jpg",
+            storage=temp_storage,
+        )
+        assert jpg_bytes.startswith(b"\xff\xd8")
+
+
+def test_render_long_recipient_name_auto_shrink(temp_storage):
     tpl_config = {
         "kind": "builtin",
         "key": "modern",
-        "layout": {"name_y": 42.0, "course_y": 60.0, "date_y": 76.0},
+        "layout": BUILTIN_STYLE_CONFIGS["modern"]["layout"],
     }
     very_long_name = "Dr. " + "Supercalifragilisticexpialidocious " * 5 + "The Third"
+    job_fields = {
+        "title": "Long Course Title " * 4,
+        "issued_date": "2026-10-09",
+        "organization_name": "Academy",
+    }
     pdf_bytes = render_certificate(
-        recipient_name=very_long_name,
-        course_title="Long Course Title " * 4,
-        issued_date="2026-10-09",
-        organization_name="Academy",
-        template=tpl_config,
+        name=very_long_name,
+        template_snapshot=tpl_config,
+        job_fields=job_fields,
+        output_format="pdf",
+        storage=temp_storage,
     )
-    assert pdf_bytes.startswith(b"%PDF-")
+    assert pdf_bytes.startswith(b"%PDF")
 
 
 def test_validate_and_store_background_success(temp_storage):
-    # Create an image matching A4 landscape aspect ratio (1414 x 1000 px -> ratio ~1.414)
-    img = Image.new("RGB", (1414, 1000), color="blue")
+    # Any aspect ratio should now succeed (A4 check removed)
+    img = Image.new("RGB", (1000, 1000), color="blue")
     buffer = io.BytesIO()
     img.save(buffer, format="PNG")
     img_bytes = buffer.getvalue()
 
-    stored_path = validate_and_store_background(img_bytes, temp_storage)
-    assert stored_path.startswith("backgrounds/")
+    tpl_id = uuid.uuid4()
+    stored_path = validate_and_store_background(img_bytes, tpl_id, temp_storage)
+    assert stored_path == f"backgrounds/{tpl_id}.png"
     assert temp_storage.exists(stored_path)
 
 
-def test_validate_and_store_background_bad_aspect(temp_storage):
-    # Square image (ratio 1.0) fails aspect ratio check
-    img = Image.new("RGB", (500, 500), color="red")
-    buffer = io.BytesIO()
-    img.save(buffer, format="PNG")
-    img_bytes = buffer.getvalue()
-
-    with pytest.raises(ValueError, match="aspect ratio"):
-        validate_and_store_background(img_bytes, temp_storage)
-
-
 def test_validate_and_store_background_oversized(temp_storage):
-    # 6 MB fake byte stream
-    huge_bytes = b"\x00" * (6 * 1024 * 1024)
-    with pytest.raises(ValueError, match="exceeds maximum allowed limit"):
-        validate_and_store_background(huge_bytes, temp_storage)
+    # 11 MB fake byte stream exceeds 10 MB limit
+    huge_bytes = b"\x00" * (11 * 1024 * 1024)
+    tpl_id = uuid.uuid4()
+    with pytest.raises(ValueError, match="exceeds maximum allowed limit of 10 MB"):
+        validate_and_store_background(huge_bytes, tpl_id, temp_storage)
+
+
+def test_validate_and_store_background_unsupported_format(temp_storage):
+    # Plain text file fails image decoding
+    tpl_id = uuid.uuid4()
+    with pytest.raises(ValueError, match="Invalid or corrupted image file"):
+        validate_and_store_background(b"not an image file at all", tpl_id, temp_storage)

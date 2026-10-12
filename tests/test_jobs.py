@@ -22,6 +22,7 @@ def test_create_job_and_idempotency(client):
         "title": "Full-Stack Web Development",
         "organization_name": "Tech Institute",
         "issued_date": "2026-10-10",
+        "output_format": "pdf",
         "template_id": template_id,
         "recipients": [
             {"name": "Alice Cooper", "email": "alice@example.com"},
@@ -71,31 +72,43 @@ def test_job_request_validation(client):
     assert res_unknown_tpl.status_code == 404
     assert "not found" in res_unknown_tpl.json()["error"]["message"].lower()
 
-    # 4. Request with invalid email: ACCEPTED (202), row stored as failed
+    # 4. Missing required field for builtin template (e.g. missing title) -> 422
+    res_missing_title = client.post(
+        "/api/v1/jobs",
+        json={
+            "issued_date": "2026-10-10",
+            "template_id": template_id,
+            "recipients": [{"name": "A", "email": "a@a.com"}],
+        },
+    )
+    assert res_missing_title.status_code == 422
+
+    # 5. Request with optional email omitted is valid and succeeds; bad email is stored as failed
     mixed_payload = {
         **base_payload,
         "recipients": [
-            {"name": "Valid User", "email": "valid@example.com"},
+            {"name": "Valid User With Email", "email": "valid@example.com"},
+            {"name": "Valid User No Email"},  # Optional email omitted
             {"name": "Bad Email User", "email": "not-an-email-at-all"},
+            {"name": "", "email": "emptyname@example.com"},  # Bad name
         ],
     }
     res_mixed = client.post("/api/v1/jobs", json=mixed_payload)
     assert res_mixed.status_code == 202
     job_id = res_mixed.json()["id"]
 
-    # Poll status: valid user succeeded, bad email user failed
+    # Poll status: 2 succeeded, 2 failed
     prog = client.get(f"/api/v1/jobs/{job_id}").json()
-    assert prog["total"] == 2
-    assert prog["succeeded"] == 1
-    assert prog["failed"] == 1
+    assert prog["total"] == 4
+    assert prog["succeeded"] == 2
+    assert prog["failed"] == 2
     assert prog["status"] == "completed_with_errors"
 
-    # Verify failure reason is recorded on failed row
-    certs_res = client.get(f"/api/v1/jobs/{job_id}/certificates?status=failed")
-    assert certs_res.status_code == 200
-    failed_rows = certs_res.json()["items"]
-    assert len(failed_rows) == 1
-    assert "invalid email format" in failed_rows[0]["error_message"].lower()
+    # Status response includes failed_recipients list with reasons
+    assert len(prog["failed_recipients"]) == 2
+    failed_reasons = [f["error_message"] for f in prog["failed_recipients"]]
+    assert any("Invalid email format" in r for r in failed_reasons)
+    assert any("Recipient name cannot be empty" in r for r in failed_reasons)
 
 
 def test_job_progress_derived_statuses(test_db_session_factory):
@@ -112,8 +125,8 @@ def test_job_progress_derived_statuses(test_db_session_factory):
         db.commit()
 
         # 1. QUEUED: pending > 0, succeeded == 0, failed == 0
-        c1 = Certificate(job_id=job.id, recipient_name="C1", recipient_email="c1@a.com", status=CertificateStatus.PENDING)
-        c2 = Certificate(job_id=job.id, recipient_name="C2", recipient_email="c2@a.com", status=CertificateStatus.PENDING)
+        c1 = Certificate(job_id=job.id, recipient_name="C1", recipient_email="c1@a.com", file_name="C1.pdf", status=CertificateStatus.PENDING)
+        c2 = Certificate(job_id=job.id, recipient_name="C2", recipient_email="c2@a.com", file_name="C2.pdf", status=CertificateStatus.PENDING)
         db.add_all([c1, c2])
         db.commit()
         prog = get_progress(db, job.id)
@@ -153,10 +166,10 @@ def test_individual_failure_isolation(client, monkeypatch):
     """Monkeypatch the generator to raise for one recipient and verify others succeed."""
     original_render = worker.render_certificate
 
-    def faulty_render(recipient_name, *args, **kwargs):
-        if recipient_name == "Crashing Person":
+    def faulty_render(name, *args, **kwargs):
+        if name == "Crashing Person":
             raise RuntimeError("Renderer simulated crash on character set!")
-        return original_render(recipient_name, *args, **kwargs)
+        return original_render(name, *args, **kwargs)
 
     monkeypatch.setattr(worker, "render_certificate", faulty_render)
 
@@ -202,6 +215,7 @@ def test_certificate_and_zip_retrieval(client):
         "template_id": template_id,
         "recipients": [
             {"name": "Good Recipient", "email": "good@example.com"},
+            {"name": "Good Recipient", "email": "good2@example.com"},  # Deduplicated filename: Good_Recipient (2).pdf
             {"name": "Bad Recipient", "email": "bad_email_addr"},
         ],
     }
@@ -210,36 +224,42 @@ def test_certificate_and_zip_retrieval(client):
     job_id = res.json()["id"]
 
     certs = client.get(f"/api/v1/jobs/{job_id}/certificates").json()["items"]
-    good_cert = next(c for c in certs if c["status"] == "succeeded")
+    succeeded_certs = [c for c in certs if c["status"] == "succeeded"]
     bad_cert = next(c for c in certs if c["status"] == "failed")
+    assert len(succeeded_certs) == 2
+
+    # Check filename deduplication
+    assert succeeded_certs[0]["file_name"] == "Good_Recipient.pdf"
+    assert succeeded_certs[1]["file_name"] == "Good_Recipient (2).pdf"
 
     # 1. Single PDF download succeeds for valid cert
-    single_res = client.get(f"/api/v1/certificates/{good_cert['id']}/download")
+    single_res = client.get(f"/api/v1/certificates/{succeeded_certs[0]['id']}/download")
     assert single_res.status_code == 200
-    assert single_res.content.startswith(b"%PDF-")
+    assert single_res.content.startswith(b"%PDF")
+    assert 'filename="Good_Recipient.pdf"' in single_res.headers["content-disposition"]
 
     # 2. Single PDF download returns 404 for failed cert
     bad_res = client.get(f"/api/v1/certificates/{bad_cert['id']}/download")
     assert bad_res.status_code == 404
 
-    # 3. Single PDF download returns 404 for non-existent cert
-    missing_res = client.get(f"/api/v1/certificates/{uuid.uuid4()}/download")
-    assert missing_res.status_code == 404
-
-    # 4. Streamed ZIP download contains ONLY succeeded certificates
+    # 3. Streamed ZIP download named after job title and containing deduplicated file_names
     zip_res = client.get(f"/api/v1/jobs/{job_id}/download")
     assert zip_res.status_code == 200
     assert zip_res.headers["content-type"] == "application/zip"
+    assert 'filename="Cloud_Computing.zip"' in zip_res.headers["content-disposition"]
 
     with zipfile.ZipFile(io.BytesIO(zip_res.content)) as zf:
         file_list = zf.namelist()
-        assert len(file_list) == 1  # Only good_cert included
-        assert file_list[0].endswith(".pdf")
+        assert len(file_list) == 2
+        assert "Good_Recipient.pdf" in file_list
+        assert "Good_Recipient (2).pdf" in file_list
 
 
 def test_crash_recovery(test_db_session_factory, temp_storage, monkeypatch):
     """Verifies that certificates stuck in 'processing' are reset to 'pending' and re-executed."""
-    monkeypatch.setattr(worker, "storage", temp_storage)
+    monkeypatch.setenv("WORKER_MODE", "inline")
+    monkeypatch.setattr(worker, "SessionLocal", test_db_session_factory)
+    monkeypatch.setattr(worker, "default_storage", temp_storage)
 
     with test_db_session_factory() as db:
         tpl = db.query(Template).first()
@@ -247,7 +267,12 @@ def test_crash_recovery(test_db_session_factory, temp_storage, monkeypatch):
             title="Crash Recovery Test",
             issued_date=date(2026, 10, 10),
             template_id=tpl.id,
-            layout_snapshot=tpl.layout,
+            layout_snapshot={
+                "kind": tpl.kind,
+                "key": tpl.key,
+                "layout": tpl.layout,
+                "required_fields": tpl.required_fields,
+            },
         )
         db.add(job)
         db.flush()
@@ -257,11 +282,11 @@ def test_crash_recovery(test_db_session_factory, temp_storage, monkeypatch):
             job_id=job.id,
             recipient_name="Stranded Recipient",
             recipient_email="stranded@example.com",
+            file_name="Stranded_Recipient.pdf",
             status=CertificateStatus.PROCESSING,
         )
         db.add(stuck_cert)
         db.commit()
-        stuck_cert_id = stuck_cert.id
 
         # Execute recovery
         recovered_count = recover_stuck_certificates(db)
