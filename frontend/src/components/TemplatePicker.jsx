@@ -2,7 +2,12 @@ import React, { useState, useEffect } from 'react';
 import { fetchTemplates, getTemplatePreviewUrl } from '../api';
 import CustomTemplateModal from './CustomTemplateModal';
 
-export default function TemplatePicker({ selectedTemplateId, setSelectedTemplateId }) {
+export default function TemplatePicker({
+  selectedTemplateId,
+  setSelectedTemplateId,
+  selectedTemplate,
+  setSelectedTemplate,
+}) {
   const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [errorMsg, setErrorMsg] = useState('');
@@ -13,8 +18,14 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
     try {
       const data = await fetchTemplates();
       setTemplates(data);
-      if (data.length > 0 && !selectedTemplateId) {
-        setSelectedTemplateId(data[0].id);
+      if (data.length > 0) {
+        if (!selectedTemplateId) {
+          setSelectedTemplateId(data[0].id);
+          if (setSelectedTemplate) setSelectedTemplate(data[0]);
+        } else {
+          const current = data.find((t) => t.id === selectedTemplateId);
+          if (current && setSelectedTemplate) setSelectedTemplate(current);
+        }
       }
     } catch (err) {
       setErrorMsg(`Failed to load templates: ${err.message}`);
@@ -27,16 +38,22 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
     loadTemplates();
   }, []);
 
+  const handleSelect = (tpl) => {
+    setSelectedTemplateId(tpl.id);
+    if (setSelectedTemplate) setSelectedTemplate(tpl);
+  };
+
   const handleCustomCreated = (newTemplate) => {
     setTemplates((prev) => [newTemplate, ...prev]);
     setSelectedTemplateId(newTemplate.id);
+    if (setSelectedTemplate) setSelectedTemplate(newTemplate);
   };
 
   return (
     <div className="card">
       <h2 className="card-title">🎨 2. Choose Certificate Template</h2>
       <p className="card-subtitle">
-        Select one of 5 built-in professional styles or upload a custom branded certificate background.
+        Select one of 5 built-in professional styles or upload your own finished certificate design.
       </p>
 
       {errorMsg && <div className="alert-box alert-danger">{errorMsg}</div>}
@@ -53,7 +70,7 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
               <div
                 key={tpl.id}
                 className={`template-card ${isSelected ? 'selected' : ''}`}
-                onClick={() => setSelectedTemplateId(tpl.id)}
+                onClick={() => handleSelect(tpl)}
               >
                 <div className="template-preview-box">
                   <img
@@ -75,7 +92,7 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
                     type="radio"
                     name="templateSelection"
                     checked={isSelected}
-                    onChange={() => setSelectedTemplateId(tpl.id)}
+                    onChange={() => handleSelect(tpl)}
                     style={{ cursor: 'pointer' }}
                   />
                 </div>
@@ -87,10 +104,10 @@ export default function TemplatePicker({ selectedTemplateId, setSelectedTemplate
           <div className="upload-card" onClick={() => setIsModalOpen(true)}>
             <div style={{ fontSize: '2rem', marginBottom: '0.5rem' }}>➕</div>
             <div style={{ fontWeight: 700, fontSize: '1rem', color: 'var(--primary)' }}>
-              Upload Custom
+              Upload your own template
             </div>
             <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginTop: '0.25rem' }}>
-              Add branded background &amp; tune text positions
+              Add a finished certificate image &amp; position the name
             </div>
           </div>
         </div>

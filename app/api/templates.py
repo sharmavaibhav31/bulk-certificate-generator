@@ -117,3 +117,70 @@ async def upload_custom_template(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e),
         )
+
+
+@router.post("/preview/draft")
+async def preview_custom_draft(
+    image: UploadFile = File(..., description="Certificate background image"),
+    name_x: float = Form(50.0, ge=0.0, le=100.0),
+    name_y: float = Form(57.0, ge=0.0, le=100.0),
+    font: str = Form("dejavu_sans"),
+    font_size_pct: float = Form(5.0, gt=0.0, le=50.0),
+    color: str = Form("#1A202C"),
+    max_width_pct: float = Form(70.0, gt=0.0, le=100.0),
+    sample_name: str = Form("Jane Doe"),
+):
+    """
+    Render a live preview PNG on the fly from an uploaded draft image and layout specs,
+    without saving anything to persistent storage.
+    """
+    import io
+    from PIL import Image
+    from app.services.certificate_renderer import render_certificate
+
+    file_bytes = await image.read()
+    if not file_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty.")
+
+    try:
+        loaded_img = Image.open(io.BytesIO(file_bytes))
+        if loaded_img.mode not in ("RGB", "RGBA"):
+            loaded_img = loaded_img.convert("RGBA" if "A" in loaded_img.mode else "RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid image file: {str(exc)}")
+
+    snapshot = {
+        "kind": "custom",
+        "key": "custom",
+        "background_path": None,
+        "layout": {
+            "name_x": name_x,
+            "name_y": name_y,
+            "font": font,
+            "font_size_pct": font_size_pct,
+            "color": color,
+            "max_width_pct": max_width_pct,
+        },
+        "required_fields": ["name"],
+    }
+
+    try:
+        png_bytes = render_certificate(
+            name=sample_name,
+            template_snapshot=snapshot,
+            job_fields={},
+            output_format="png",
+            preloaded_base_image=loaded_img,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to render preview: {str(exc)}",
+        )
+
+    return Response(
+        content=png_bytes,
+        media_type="image/png",
+        headers={"Content-Disposition": 'inline; filename="draft_preview.png"'},
+    )
+

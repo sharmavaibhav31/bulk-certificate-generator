@@ -16,11 +16,14 @@ function getTodayDateString() {
 export default function App() {
   const [recipients, setRecipients] = useState([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState('');
+  const [selectedTemplate, setSelectedTemplate] = useState(null);
   const [title, setTitle] = useState('');
   const [organizationName, setOrganizationName] = useState('');
   const [issuedDate, setIssuedDate] = useState(getTodayDateString());
   const [outputFormat, setOutputFormat] = useState('pdf');
   const [activeJobId, setActiveJobId] = useState(null);
+
+  const isCustom = selectedTemplate?.kind === 'custom';
 
   const handleReset = () => {
     setActiveJobId(null);
@@ -46,6 +49,8 @@ export default function App() {
           <TemplatePicker
             selectedTemplateId={selectedTemplateId}
             setSelectedTemplateId={setSelectedTemplateId}
+            selectedTemplate={selectedTemplate}
+            setSelectedTemplate={setSelectedTemplate}
           />
 
           <DetailsForm
@@ -57,6 +62,7 @@ export default function App() {
             setIssuedDate={setIssuedDate}
             outputFormat={outputFormat}
             setOutputFormat={setOutputFormat}
+            isCustom={isCustom}
           />
 
           <SubmitBar
@@ -64,6 +70,7 @@ export default function App() {
             organizationName={organizationName}
             issuedDate={issuedDate}
             selectedTemplateId={selectedTemplateId}
+            isCustom={isCustom}
             outputFormat={outputFormat}
             recipients={recipients}
             onJobStarted={(jobId) => setActiveJobId(jobId)}

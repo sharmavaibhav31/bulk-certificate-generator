@@ -35,6 +35,26 @@ export async function uploadCustomTemplate(formData) {
   return handleResponse(res);
 }
 
+export async function fetchDraftPreview(formData) {
+  const res = await fetch(`${API_BASE}/templates/preview/draft`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) {
+    let errorMsg = `HTTP Error ${res.status}`;
+    try {
+      const data = await res.json();
+      if (data?.detail) errorMsg = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+    } catch {
+      // ignore
+    }
+    throw new Error(errorMsg);
+  }
+  const blob = await res.blob();
+  return URL.createObjectURL(blob);
+}
+
+
 export async function createJob(jobPayload) {
   const res = await fetch(`${API_BASE}/jobs`, {
     method: 'POST',

@@ -6,6 +6,7 @@ export default function SubmitBar({
   organizationName,
   issuedDate,
   selectedTemplateId,
+  isCustom = false,
   outputFormat = 'pdf',
   recipients,
   onJobStarted,
@@ -13,9 +14,11 @@ export default function SubmitBar({
   const [submitting, setSubmitting] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
 
+  // Built-in templates require title & issuedDate; Custom templates only require templateId & recipients
   const isFormValid =
     Boolean(selectedTemplateId) &&
-    recipients.length > 0;
+    recipients.length > 0 &&
+    (isCustom || (Boolean(title && title.trim()) && Boolean(issuedDate)));
 
   const handleSubmit = async () => {
     if (!isFormValid || submitting) return;
@@ -28,11 +31,11 @@ export default function SubmitBar({
         title: title ? title.trim() : null,
         organization_name: organizationName ? organizationName.trim() : null,
         issued_date: issuedDate || null,
-        output_format: outputFormat || 'pdf',
+        output_format: (outputFormat || 'pdf').toLowerCase(),
         template_id: selectedTemplateId,
         recipients: recipients.map((r) => ({
-          name: r.name,
-          email: r.email || null,
+          name: (r.name || '').trim(),
+          email: (r.email || '').trim() || null,
         })),
       };
 
@@ -61,6 +64,7 @@ export default function SubmitBar({
           <div style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>
             {recipients.length} recipient{recipients.length === 1 ? '' : 's'} queued • Format: {outputFormat.toUpperCase()}
             {!selectedTemplateId && ' • Select a template'}
+            {!isCustom && (!title?.trim() || !issuedDate) && ' • Enter title & date'}
           </div>
         </div>
 

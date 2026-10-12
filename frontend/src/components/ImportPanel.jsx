@@ -1,84 +1,87 @@
 import React, { useState } from 'react';
 import Papa from 'papaparse';
+import readXlsxFile from 'read-excel-file';
 
 const EMAIL_REGEX = /^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$/;
-
-function validateRecipient(name, email) {
-  const isNameValid = Boolean(name && name.trim().length > 0 && name.trim().length <= 200);
-  const isEmailValid = Boolean(email && EMAIL_REGEX.test(email.trim()));
-  return {
-    isNameValid,
-    isEmailValid,
-    isValid: isNameValid && isEmailValid,
-  };
-}
+const NAME_HEADER_REGEX = /^(name|student|student[\s_-]?name|full[\s_-]?name|recipient|recipient[\s_-]?name)$/i;
+const EMAIL_HEADER_REGEX = /^(email|mail|e-mail|recipient[\s_-]?email)$/i;
 
 export default function ImportPanel({ recipients, setRecipients }) {
   const [activeTab, setActiveTab] = useState('upload'); // 'upload' | 'paste'
   const [pasteText, setPasteText] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Parse CSV content using PapaParse
-  const handleCsvParsed = (results) => {
-    const data = results.data;
-    if (!data || data.length === 0) {
-      setErrorMsg('CSV file is empty.');
+  // Tabular column mapping state (for CSV / XLSX)
+  const [tabularData, setTabularData] = useState(null); // { headers: string[], rows: string[][] }
+  const [nameColIdx, setNameColIdx] = useState(0);
+  const [emailColIdx, setEmailColIdx] = useState(-1);
+
+  // Apply column selection to tabular data and update parent recipients
+  const applyColumnMapping = (rows, nIdx, eIdx) => {
+    const parsed = [];
+    rows.forEach((row) => {
+      const name = String(row[nIdx] ?? '').trim();
+      const email = eIdx >= 0 ? String(row[eIdx] ?? '').trim() : '';
+      if (!name && !email) return; // skip completely empty rows
+      parsed.push({ name, email });
+    });
+    setRecipients(parsed);
+  };
+
+  const handleTabularLoaded = (allRows) => {
+    if (!allRows || allRows.length === 0) {
+      setErrorMsg('Uploaded file contains no data.');
       return;
     }
 
-    const newRecipients = [];
-    const firstRow = data[0];
+    // Filter out completely empty rows
+    const cleanedRows = allRows.filter((r) =>
+      Array.isArray(r) && r.some((c) => c !== null && c !== undefined && String(c).trim() !== '')
+    );
 
-    // Detect if first row is header
-    let nameIdx = -1;
-    let emailIdx = -1;
-    let startIndex = 0;
-
-    if (Array.isArray(firstRow)) {
-      firstRow.forEach((col, idx) => {
-        const val = String(col).trim().toLowerCase();
-        if (val === 'name' || val === 'recipient_name' || val === 'full_name') nameIdx = idx;
-        if (val === 'email' || val === 'recipient_email') emailIdx = idx;
-      });
-
-      if (nameIdx !== -1 && emailIdx !== -1) {
-        startIndex = 1; // Header found
-      } else {
-        // Fallback: 2 columns without header (col 0 = name, col 1 = email)
-        nameIdx = 0;
-        emailIdx = 1;
-        startIndex = 0;
-      }
-
-      for (let i = startIndex; i < data.length; i++) {
-        const row = data[i];
-        if (!row || row.length < 2) continue;
-        const name = String(row[nameIdx] || '').trim();
-        const email = String(row[emailIdx] || '').trim();
-        if (!name && !email) continue; // Skip completely empty line
-        newRecipients.push({ name, email });
-      }
-    } else if (typeof firstRow === 'object') {
-      // Objects mode if PapaParse header: true
-      const keys = Object.keys(firstRow);
-      const nameKey = keys.find((k) => /name/i.test(k));
-      const emailKey = keys.find((k) => /email/i.test(k));
-
-      data.forEach((row) => {
-        const name = String(row[nameKey] || '').trim();
-        const email = String(row[emailKey] || '').trim();
-        if (name || email) {
-          newRecipients.push({ name, email });
-        }
-      });
+    if (cleanedRows.length === 0) {
+      setErrorMsg('Uploaded file contains only empty rows.');
+      return;
     }
 
-    setRecipients(newRecipients);
+    const firstRow = cleanedRows[0];
+    let detectedName = -1;
+    let detectedEmail = -1;
+
+    firstRow.forEach((col, idx) => {
+      const text = String(col ?? '').trim();
+      if (NAME_HEADER_REGEX.test(text)) detectedName = idx;
+      if (EMAIL_HEADER_REGEX.test(text)) detectedEmail = idx;
+    });
+
+    let headers = [];
+    let dataRows = [];
+    let initialNameIdx = 0;
+    let initialEmailIdx = -1;
+
+    if (detectedName !== -1) {
+      // First row is a header
+      headers = firstRow.map((c, i) => String(c ?? '').trim() || `Column ${i + 1}`);
+      dataRows = cleanedRows.slice(1);
+      initialNameIdx = detectedName;
+      initialEmailIdx = detectedEmail;
+    } else {
+      // No recognized header: treat first row as data, name is column 0
+      headers = firstRow.map((_, i) => `Column ${i + 1}`);
+      dataRows = cleanedRows;
+      initialNameIdx = 0;
+      initialEmailIdx = -1;
+    }
+
+    setTabularData({ headers, rows: dataRows });
+    setNameColIdx(initialNameIdx);
+    setEmailColIdx(initialEmailIdx);
+    applyColumnMapping(dataRows, initialNameIdx, initialEmailIdx);
     setErrorMsg('');
   };
 
-  // Parse TXT line-by-line: supports "Name, email" and "Name <email>"
-  const handleTxtParse = (text) => {
+  // TXT line-by-line parsing: supports "Name <email>", "Name, email", or bare name
+  const parseTxtLines = (text) => {
     const lines = text.split(/\r?\n/);
     const parsed = [];
 
@@ -86,7 +89,7 @@ export default function ImportPanel({ recipients, setRecipients }) {
       const trimmed = line.trim();
       if (!trimmed) return;
 
-      // Check format: "Name <email@example.com>"
+      // 1. "Name <email@example.com>"
       const angleBracketMatch = trimmed.match(/^([^<]+)<([^>]+)>$/);
       if (angleBracketMatch) {
         parsed.push({
@@ -96,7 +99,7 @@ export default function ImportPanel({ recipients, setRecipients }) {
         return;
       }
 
-      // Check format: "Name, email@example.com"
+      // 2. "Name, email@example.com"
       const commaParts = trimmed.split(',');
       if (commaParts.length >= 2) {
         const name = commaParts[0].trim();
@@ -105,75 +108,117 @@ export default function ImportPanel({ recipients, setRecipients }) {
         return;
       }
 
-      // Fallback
+      // 3. Single name per line
       parsed.push({ name: trimmed, email: '' });
     });
 
-    return parsed;
+    setTabularData(null);
+    setRecipients(parsed);
+    setErrorMsg('');
   };
 
-  const handleFileUpload = (e) => {
+  const handleFileUpload = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const fileName = file.name.toLowerCase();
-    if (fileName.endsWith('.csv')) {
+    const lowerName = file.name.toLowerCase();
+
+    if (lowerName.endsWith('.csv')) {
       Papa.parse(file, {
-        complete: handleCsvParsed,
+        skipEmptyLines: true,
+        complete: (results) => {
+          handleTabularLoaded(results.data);
+        },
         error: (err) => setErrorMsg(`Failed to parse CSV: ${err.message}`),
       });
-    } else if (fileName.endsWith('.txt')) {
+    } else if (lowerName.endsWith('.xlsx')) {
+      try {
+        const rows = await readXlsxFile(file);
+        handleTabularLoaded(rows);
+      } catch (err) {
+        setErrorMsg(`Failed to parse Excel (.xlsx) file: ${err.message}`);
+      }
+    } else if (lowerName.endsWith('.txt')) {
       const reader = new FileReader();
       reader.onload = (event) => {
         const content = event.target?.result || '';
-        const parsed = handleTxtParse(content);
-        setRecipients(parsed);
-        setErrorMsg('');
+        parseTxtLines(content);
       };
       reader.readAsText(file);
     } else {
-      setErrorMsg('Please upload a .csv or .txt file.');
+      setErrorMsg('Unsupported file format. Please upload a .csv, .xlsx, or .txt file.');
     }
   };
 
   const handlePasteSubmit = () => {
     if (!pasteText.trim()) return;
-    const parsed = handleTxtParse(pasteText);
-    setRecipients(parsed);
-    setErrorMsg('');
+    parseTxtLines(pasteText);
+  };
+
+  const handleNameColChange = (e) => {
+    const newIdx = parseInt(e.target.value, 10);
+    setNameColIdx(newIdx);
+    if (tabularData) {
+      applyColumnMapping(tabularData.rows, newIdx, emailColIdx);
+    }
+  };
+
+  const handleEmailColChange = (e) => {
+    const newIdx = parseInt(e.target.value, 10);
+    setEmailColIdx(newIdx);
+    if (tabularData) {
+      applyColumnMapping(tabularData.rows, nameColIdx, newIdx);
+    }
   };
 
   const removeRow = (index) => {
     setRecipients(recipients.filter((_, i) => i !== index));
   };
 
-  // Calculate statistics
-  const stats = recipients.reduce(
-    (acc, r) => {
-      const { isValid } = validateRecipient(r.name, r.email);
-      if (isValid) acc.ready += 1;
-      else acc.problem += 1;
-      return acc;
-    },
-    { ready: 0, problem: 0 }
-  );
+  // Duplicate name count calculation
+  const nameCounts = {};
+  recipients.forEach((r) => {
+    const key = (r.name || '').trim().toLowerCase();
+    if (key) {
+      nameCounts[key] = (nameCounts[key] || 0) + 1;
+    }
+  });
+
+  // Calculate statistics: Ready vs Attention
+  let readyCount = 0;
+  let attentionCount = 0;
+
+  recipients.forEach((r) => {
+    const cleanName = (r.name || '').trim();
+    const cleanEmail = (r.email || '').trim();
+    const nameValid = cleanName.length > 0 && cleanName.length <= 200;
+    const emailValid = !cleanEmail || EMAIL_REGEX.test(cleanEmail);
+
+    if (nameValid && emailValid) {
+      readyCount += 1;
+    } else {
+      attentionCount += 1;
+    }
+  });
 
   return (
     <div className="card">
       <h2 className="card-title">👥 1. Import Recipients</h2>
       <p className="card-subtitle">
-        Upload a CSV/TXT file or paste recipient details. Invalid entries are accepted and will be
-        flagged in the status report rather than failing the whole job.
+        Upload a CSV, Excel (.xlsx), or plain text file. Invalid or empty names are accepted and flagged
+        so they do not fail the rest of your batch.
       </p>
 
       <div className="tabs-header">
         <button
+          type="button"
           className={`tab-btn ${activeTab === 'upload' ? 'active' : ''}`}
           onClick={() => setActiveTab('upload')}
         >
-          📁 Upload File (.csv, .txt)
+          📁 Upload File (.csv, .xlsx, .txt)
         </button>
         <button
+          type="button"
           className={`tab-btn ${activeTab === 'paste' ? 'active' : ''}`}
           onClick={() => setActiveTab('paste')}
         >
@@ -187,84 +232,207 @@ export default function ImportPanel({ recipients, setRecipients }) {
         <div className="form-group">
           <input
             type="file"
-            accept=".csv, .txt"
+            accept=".csv, .xlsx, .txt"
             onChange={handleFileUpload}
             className="form-input"
           />
-          <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.25rem' }}>
-            Supported formats: CSV with "name, email" columns, or TXT lines formatted as "Name, email" or "Name &lt;email&gt;".
+          <small style={{ color: 'var(--text-muted)', display: 'block', marginTop: '0.35rem' }}>
+            Supported formats: <strong>.csv</strong>, <strong>.xlsx</strong> (Excel), or <strong>.txt</strong> (one name per line or name &lt;email&gt;).
           </small>
         </div>
       ) : (
         <div className="form-group">
           <textarea
-            className="form-textarea"
-            placeholder="Jane Doe, jane@example.com&#10;John Smith <john@example.com>"
+            className="form-input"
+            rows="5"
+            placeholder="Alice Johnson&#10;Bob Dylan <bob@example.com>&#10;Charlie Brown, charlie@example.com"
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
           />
-          <button
-            type="button"
-            className="tab-btn active"
-            style={{ marginTop: '0.5rem' }}
-            onClick={handlePasteSubmit}
-          >
-            Apply Pasted Recipients
-          </button>
+          <div style={{ marginTop: '0.5rem', display: 'flex', gap: '0.5rem' }}>
+            <button type="button" className="action-btn" onClick={handlePasteSubmit}>
+              Parse Text Entries
+            </button>
+            {pasteText && (
+              <button
+                type="button"
+                className="action-btn"
+                style={{ background: '#f1f5f9', color: '#475569' }}
+                onClick={() => setPasteText('')}
+              >
+                Clear
+              </button>
+            )}
+          </div>
         </div>
       )}
 
+      {/* Tabular Column Mapping Controls */}
+      {tabularData && tabularData.headers && tabularData.headers.length > 0 && (
+        <div style={{ background: '#f8fafc', padding: '1rem', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-color)', marginBottom: '1.25rem' }}>
+          <div style={{ fontWeight: 600, fontSize: '0.875rem', marginBottom: '0.5rem', color: 'var(--text-main)' }}>
+            ⚙️ Column Mapping
+          </div>
+          <div style={{ display: 'flex', gap: '1.5rem', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Recipient Name Column:</label>
+              <select
+                className="form-input"
+                style={{ width: 'auto', padding: '0.35rem 0.75rem' }}
+                value={nameColIdx}
+                onChange={handleNameColChange}
+              >
+                {tabularData.headers.map((h, i) => (
+                  <option key={i} value={i}>
+                    {h}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <label style={{ fontSize: '0.85rem', fontWeight: 600 }}>Email Column (Optional):</label>
+              <select
+                className="form-input"
+                style={{ width: 'auto', padding: '0.35rem 0.75rem' }}
+                value={emailColIdx}
+                onChange={handleEmailColChange}
+              >
+                <option value="-1">None (Omit Email)</option>
+                {tabularData.headers.map((h, i) => (
+                  <option key={i} value={i}>
+                    {h}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Recipients Preview Table & Stats */}
       {recipients.length > 0 && (
-        <div>
-          <div className="badge-group">
-            <span className="badge badge-success">✓ {stats.ready} ready</span>
-            {stats.problem > 0 && (
-              <span className="badge badge-danger">⚠ {stats.problem} with problems</span>
-            )}
-            <span style={{ color: 'var(--text-muted)', fontSize: '0.85rem' }}>
-              ({recipients.length} total)
-            </span>
+        <div style={{ marginTop: '1.25rem' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
+            <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+              <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>
+                Total: {recipients.length}
+              </span>
+              <span
+                style={{
+                  background: '#dcfce7',
+                  color: '#166534',
+                  padding: '0.2rem 0.6rem',
+                  borderRadius: '9999px',
+                  fontSize: '0.8rem',
+                  fontWeight: 600,
+                }}
+              >
+                ✓ {readyCount} ready
+              </span>
+              {attentionCount > 0 && (
+                <span
+                  style={{
+                    background: '#fee2e2',
+                    color: '#991b1b',
+                    padding: '0.2rem 0.6rem',
+                    borderRadius: '9999px',
+                    fontSize: '0.8rem',
+                    fontWeight: 600,
+                  }}
+                >
+                  ⚠️ {attentionCount} need attention
+                </span>
+              )}
+            </div>
+
+            <button
+              type="button"
+              onClick={() => {
+                setRecipients([]);
+                setTabularData(null);
+              }}
+              style={{
+                background: 'none',
+                border: 'none',
+                color: 'var(--danger)',
+                cursor: 'pointer',
+                fontSize: '0.825rem',
+                fontWeight: 600,
+              }}
+            >
+              Clear All Rows
+            </button>
           </div>
 
-          <div className="table-wrapper">
-            <table>
+          <div className="table-container" style={{ maxHeight: '320px', overflowY: 'auto' }}>
+            <table className="preview-table">
               <thead>
                 <tr>
                   <th style={{ width: '50px' }}>#</th>
                   <th>Recipient Name</th>
-                  <th>Email Address</th>
-                  <th style={{ width: '80px' }}>Status</th>
-                  <th style={{ width: '60px' }}>Action</th>
+                  <th>Email (Optional)</th>
+                  <th style={{ width: '80px', textAlign: 'center' }}>Remove</th>
                 </tr>
               </thead>
               <tbody>
-                {recipients.map((rec, idx) => {
-                  const { isNameValid, isEmailValid, isValid } = validateRecipient(
-                    rec.name,
-                    rec.email
-                  );
+                {recipients.map((r, idx) => {
+                  const cleanName = (r.name || '').trim();
+                  const cleanEmail = (r.email || '').trim();
+                  const isNameEmpty = cleanName.length === 0;
+                  const isEmailInvalid = cleanEmail && !EMAIL_REGEX.test(cleanEmail);
+                  const isDuplicate = cleanName && (nameCounts[cleanName.toLowerCase()] || 0) > 1;
+
                   return (
-                    <tr key={idx} className={!isValid ? 'row-invalid' : ''}>
-                      <td>{idx + 1}</td>
-                      <td style={{ color: !isNameValid ? 'var(--danger)' : 'inherit' }}>
-                        {rec.name || <em>(empty name)</em>}
-                      </td>
-                      <td style={{ color: !isEmailValid ? 'var(--danger)' : 'inherit' }}>
-                        {rec.email || <em>(empty email)</em>}
-                      </td>
+                    <tr
+                      key={idx}
+                      style={{
+                        backgroundColor: isNameEmpty ? '#fff5f5' : isEmailInvalid ? '#fffbeb' : 'inherit',
+                      }}
+                    >
+                      <td style={{ color: 'var(--text-muted)', fontSize: '0.825rem' }}>{idx + 1}</td>
                       <td>
-                        {isValid ? (
-                          <span className="badge badge-success">Valid</span>
+                        {isNameEmpty ? (
+                          <span style={{ color: 'var(--danger)', fontWeight: 700, fontSize: '0.85rem' }}>
+                            ⚠️ Missing Name
+                          </span>
                         ) : (
-                          <span className="badge badge-danger">Problem</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flexWrap: 'wrap' }}>
+                            <span>{cleanName}</span>
+                            {isDuplicate && (
+                              <span
+                                style={{
+                                  fontSize: '0.725rem',
+                                  background: '#fef3c7',
+                                  color: '#92400e',
+                                  padding: '0.1rem 0.4rem',
+                                  borderRadius: '4px',
+                                  fontWeight: 600,
+                                }}
+                              >
+                                Duplicate (saved as "{cleanName} (2)")
+                              </span>
+                            )}
+                          </div>
                         )}
                       </td>
                       <td>
+                        {cleanEmail ? (
+                          <span style={{ color: isEmailInvalid ? 'var(--danger)' : 'inherit' }}>
+                            {cleanEmail} {isEmailInvalid && '⚠️ (Invalid syntax)'}
+                          </span>
+                        ) : (
+                          <span style={{ color: 'var(--text-muted)', fontStyle: 'italic', fontSize: '0.8rem' }}>
+                            (None)
+                          </span>
+                        )}
+                      </td>
+                      <td style={{ textAlign: 'center' }}>
                         <button
                           type="button"
-                          className="btn-remove"
-                          onClick={() => removeRow(idx)}
+                          className="row-delete-btn"
                           title="Remove row"
+                          onClick={() => removeRow(idx)}
                         >
                           ✕
                         </button>
